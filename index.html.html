@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Golf Swing Analyzer</title>
+<style>
+:root{--bg:#f6f7f4;--fg:#1d2b22;--card:#fff;--ac:#2f7d4f;--mut:#667a6e;--bd:#dde2da;--bad:#c2553a;--mid:#d39a2b}
+@media(prefers-color-scheme:dark){:root{--bg:#121a15;--fg:#e8efe9;--card:#1b2620;--ac:#5cc488;--mut:#9fb0a5;--bd:#2b3a31;--bad:#e5806a;--mid:#e0b457}}
+*{box-sizing:border-box}body{margin:0;font:16px/1.45 system-ui,sans-serif;background:var(--bg);color:var(--fg)}
+main{max-width:860px;margin:0 auto;padding:16px}
+h1{font-size:1.4rem;margin:.2em 0}h2{font-size:1.05rem;margin:1.2em 0 .4em}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:14px;margin:10px 0}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+button,select,input[type=file]{font:inherit;padding:8px 12px;border-radius:8px;border:1px solid var(--bd);background:var(--card);color:var(--fg)}
+button.p{background:var(--ac);color:#fff;border-color:var(--ac)}button:disabled{opacity:.5}
+.vw{position:relative;max-width:420px;margin:auto}.vw video,.vw canvas{width:100%;display:block;border-radius:10px}
+.vw canvas{position:absolute;inset:0;pointer-events:none}
+.mut{color:var(--mut);font-size:.9rem}
+.bar{height:8px;border-radius:4px;background:var(--bd);overflow:hidden;margin:6px 0}.bar i{display:block;height:100%}
+.big{font-size:2.6rem;font-weight:700}
+</style></head><body><main>
+<h1>Golf Swing Analyzer</h1>
+<p class="mut">Free and private: your video never leaves your device. Film <b>face-on</b>, full body in frame, camera still, and trim the clip to one swing for speed.</p>
+<div class="card">
+ <div class="row"><input type="file" id="f" accept="video/*">
+  <select id="bf"><option value="">Ball flight: unknown</option><option value="slice">Slices / fades right (right-hander)</option><option value="straight">Mostly straight</option><option value="hook">Hooks left</option></select>
+  <button class="p" id="go">Analyze swing</button></div>
+ <p class="mut" id="st">Loading pose model…</p>
+</div>
+<div class="vw"><video id="v" controls muted playsinline></video><canvas id="c"></canvas></div>
+<div class="row" id="ph" style="justify-content:center;margin-top:8px"></div>
+<div id="res"></div>
+<p class="mut">Limits: one 2D camera tracks your body, not the club. Club path and face angle at impact can’t be measured here, so treat results as body-movement guidance, not a lesson.</p>
+</main>
+<script type="module">
+import {PoseLandmarker,FilesetResolver} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
+const $=id=>document.getElementById(id),v=$('v'),c=$('c'),ctx=c.getContext('2d');
+const MODEL="https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task";
+const WASM="https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm";
+const STEP=1/15;let lm,S=[];
+(async()=>{try{
+ const fs=await FilesetResolver.forVisionTasks(WASM);
+ const mk=d=>PoseLandmarker.createFromOptions(fs,{baseOptions:{modelAssetPath:MODEL,delegate:d},runningMode:"VIDEO",numPoses:1});
+ try{lm=await mk("GPU")}catch(e){lm=await mk("CPU")}
+ $('st').textContent="Model ready. Choose a swing video, then press Analyze.";
+}catch(e){$('st').textContent="Couldn’t load the pose model ("+e.message+"). Open this page over http(s) with internet access, e.g. GitHub Pages."}})();
+
+$('f').onchange=e=>{const f=e.target.files[0];if(!f)return;v.src=URL.createObjectURL(f);S=[];$('res').innerHTML='';$('ph').innerHTML=''};
+v.onloadedmetadata=()=>{c.width=v.videoWidth;c.height=v.videoHeight};
+const seek=t=>new Promise(r=>{v.onseeked=()=>r();v.currentTime=t});
+
+$('go').onclick=async()=>{
+ if(!lm||!v.src)return $('st').textContent="Load a video and wait for the model first.";
+ $('go').disabled=true;S=[];const n=Math.floor(v.duration/STEP);
+ for(let i=0;i<n;i++){const t=Math.max(i*STEP,.001);await seek(t);
+  const r=lm.detectForVideo(v,i*100+1);
+  S.push({t,p:(r.landmarks&&r.landmarks[0])||null});
+  if(i%5==0)$('st').textContent="Analyzing… "+Math.round(i/n*100)+"%"}
+ $('go').disabled=false;evaluate();
+};
+
+const sc=(x,lo,hi,tol)=>Math.round(x<lo?Math.max(0,100*(1-(lo-x)/tol)):x>hi?Math.max(0,100*(1-(x-hi)/tol)):100);
+const DR={
+ tempo:"Metronome drill: swing to a 3-beat backswing and 1-beat downswing. Hit 10 balls with the pause at the top.",
+ head:"Head-steady drill: rest your head lightly against a wall or alignment stick and make slow swings without moving it.",
+ sway:"Ball-by-trail-hip drill: place a ball or headcover just outside your trail hip and turn without bumping it.",
+ turn:"Cross-arm turn drill: arms crossed on your chest, turn your back to the target, then turn through to face it.",
+ seq:"Pump drill: go to the top, drop your lead hip toward the target first with quiet arms, then swing through."
+};
+function evaluate(){
+ const F=S.map((s,i)=>({...s,i})).filter(s=>s.p),W=v.videoWidth,H=v.videoHeight;
+ if(F.length<10)return $('st').textContent="No person detected reliably. Try a clearer full-body clip.";
+ const P=(f,k)=>({x:f.p[k].x*W,y:f.p[k].y*H});
+ const wr=F.map(f=>{const a=P(f,15),b=P(f,16);return{x:(a.x+b.x)/2,y:(a.y+b.y)/2}});
+ const sp=wr.map((w,i)=>i?Math.hypot(w.x-wr[i-1].x,w.y-wr[i-1].y)/(F[i].t-F[i-1].t):0);
+ const sm=sp.map((_,i)=>(sp[Math.max(0,i-1)]+sp[i]+sp[Math.min(sp.length-1,i+1)])/3);
+ const imp=sm.indexOf(Math.max(...sm)),mx=sm[imp];let st=imp;
+ while(st>0&&sm[st]>.1*mx)st--;
+ let top=st;for(let i=st;i<=imp;i++)if(wr[i].y<wr[top].y)top=i;
+ let fin=imp;while(fin<F.length-1&&F[fin].t<F[imp].t+.4)fin++;
+ if(top-st<1||imp-top<1)return $('st').textContent="Couldn’t find a clear swing. Trim the clip so it holds one full swing.";
+ const sw=F.map(f=>Math.abs(P(f,11).x-P(f,12).x)),hw=F.map(f=>Math.abs(P(f,23).x-P(f,24).x));
+ const sw0=sw[st],hw0=hw[st];
+ const tempo=(F[top].t-F[st].t)/(F[imp].t-F[top].t);
+ const head=Math.abs(P(F[imp],0).x-P(F[st],0).x)/sw0;
+ const mid=f=>(P(f,23).x+P(f,24).x)/2,sway=Math.abs(mid(F[top])-mid(F[st]))/sw0;
+ const turn=Math.acos(Math.min(1,sw[top]/sw0))*180/Math.PI;
+ const t50=(a,a0)=>{const seg=a.slice(top,fin+1).map(x=>x/a0),b=seg[0],m=Math.max(...seg);
+  if(m-b<.08)return null;return F[top+seg.findIndex(x=>x>=b+.5*(m-b))].t};
+ const th=t50(hw,hw0),ts=t50(sw,sw0),lead=th!=null&&ts!=null?ts-th:null;
+ const M=[
+  {k:"tempo",n:"Tempo (backswing : downswing)",v:tempo.toFixed(1)+" : 1",s:sc(tempo,2.5,3.5,2),t:"Target about 3 : 1"},
+  {k:"head",n:"Head stability",v:(head*100).toFixed(0)+"% of shoulder width",s:sc(head,0,.25,.5),t:"Target under 25%"},
+  {k:"sway",n:"Hip sway in backswing",v:(sway*100).toFixed(0)+"% of shoulder width",s:sc(sway,0,.3,.5),t:"Target under 30%"},
+  {k:"turn",n:"Shoulder turn at top (estimate)",v:turn.toFixed(0)+"°",s:sc(turn,80,105,40),t:"Target 80–105°. Needs a true face-on camera."}];
+ if(lead!=null)M.push({k:"seq",n:"Hips lead shoulders in downswing",v:(lead>=0?"+":"")+(lead*1000).toFixed(0)+" ms",s:sc(lead,.02,1,.07),t:"Hips should open before shoulders (positive)"});
+ const tot=Math.round(M.reduce((a,m)=>a+m.s,0)/M.length),col=s=>s>=75?"var(--ac)":s>=50?"var(--mid)":"var(--bad)";
+ const low=M.filter(m=>m.s<75).sort((a,b)=>a.s-b.s);
+ let h=`<div class="card"><div class="mut">Overall swing score</div><div class="big" style="color:${col(tot)}">${tot}<span class="mut" style="font-size:1rem"> / 100</span></div></div><div class="card">`;
+ M.forEach(m=>h+=`<div><b>${m.n}</b>: ${m.v} <span class="mut">(${m.s}/100)</span><div class="bar"><i style="width:${m.s}%;background:${col(m.s)}"></i></div><div class="mut">${m.t}</div></div><br>`);
+ h+=`</div><h2>How to fix it</h2><div class="card">`;
+ const bf=$('bf').value;
+ if(bf==="slice")h+=`<p><b>Slice priority:</b> check your grip first (2–3 knuckles visible on the lead hand). Then use the headcover-outside-the-ball drill and swing toward “right field” to approach from the inside. Face angle can’t be measured here, so grip is the first thing to rule out.</p>`;
+ if(low.length)low.forEach(m=>h+=`<p><b>${m.n}:</b> ${DR[m.k]}</p>`);
+ else h+=`<p>All measured body movements are in range. Next, film down-the-line and check the club path.</p>`;
+ $('res').innerHTML=h+"</div>";
+ $('ph').innerHTML="";
+ [["Address",st],["Top",top],["Impact",imp],["Finish",fin]].forEach(([l,i])=>{const b=document.createElement('button');b.textContent=l;b.onclick=()=>{v.pause();v.currentTime=F[i].t};$('ph').append(b)});
+ $('st').textContent="Done. Use the phase buttons to review the skeleton overlay.";
+}
+const LN=[[11,12],[11,13],[13,15],[12,14],[14,16],[11,23],[12,24],[23,24],[23,25],[25,27],[24,26],[26,28]];
+(function loop(){ctx.clearRect(0,0,c.width,c.height);
+ const s=S.length?S[Math.min(S.length-1,Math.max(0,Math.round(v.currentTime/STEP)))]:null;
+ if(s&&s.p){ctx.lineWidth=Math.max(2,c.width/200);ctx.strokeStyle="#ffd23f";ctx.fillStyle="#ff5d5d";
+  LN.forEach(([a,b])=>{ctx.beginPath();ctx.moveTo(s.p[a].x*c.width,s.p[a].y*c.height);ctx.lineTo(s.p[b].x*c.width,s.p[b].y*c.height);ctx.stroke()});
+  [0,11,12,13,14,15,16,23,24,25,26,27,28].forEach(k=>{ctx.beginPath();ctx.arc(s.p[k].x*c.width,s.p[k].y*c.height,c.width/130+2,0,7);ctx.fill()})}
+ requestAnimationFrame(loop)})();
+</script></body></html>
