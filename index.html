@@ -23,6 +23,8 @@ button.p{background:var(--ac);color:#fff;border-color:var(--ac)}button:disabled{
 <div class="card">
  <div class="row"><input type="file" id="f" accept="video/*">
   <select id="bf"><option value="">Ball flight: unknown</option><option value="slice">Slices / fades right (right-hander)</option><option value="straight">Mostly straight</option><option value="hook">Hooks left</option></select>
+  <input id="t0" type="number" min="0" step="0.5" placeholder="Start (s)" style="width:100px">
+  <input id="t1" type="number" min="0" step="0.5" placeholder="End (s)" style="width:100px">
   <button class="p" id="go">Analyze swing</button></div>
  <p class="mut" id="st">Loading pose model…</p>
 </div>
@@ -36,7 +38,7 @@ import {PoseLandmarker,FilesetResolver} from "https://cdn.jsdelivr.net/npm/@medi
 const $=id=>document.getElementById(id),v=$('v'),c=$('c'),ctx=c.getContext('2d');
 const MODEL="https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task";
 const WASM="https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm";
-const STEP=1/15;let lm,S=[];
+const STEP=1/15;let lm,S=[],OFF=0;
 (async()=>{try{
  const fs=await FilesetResolver.forVisionTasks(WASM);
  const mk=d=>PoseLandmarker.createFromOptions(fs,{baseOptions:{modelAssetPath:MODEL,delegate:d},runningMode:"VIDEO",numPoses:1});
@@ -50,8 +52,10 @@ const seek=t=>new Promise(r=>{v.onseeked=()=>r();v.currentTime=t});
 
 $('go').onclick=async()=>{
  if(!lm||!v.src)return $('st').textContent="Load a video and wait for the model first.";
- $('go').disabled=true;S=[];const n=Math.floor(v.duration/STEP);
- for(let i=0;i<n;i++){const t=Math.max(i*STEP,.001);await seek(t);
+ $('go').disabled=true;S=[];
+ const a=Math.max(0,+$('t0').value||0),b=Math.min(v.duration,+$('t1').value||v.duration);OFF=a;
+ const n=Math.floor((b-a)/STEP);
+ for(let i=0;i<n;i++){const t=Math.max(a+i*STEP,.001);await seek(t);
   const r=lm.detectForVideo(v,i*100+1);
   S.push({t,p:(r.landmarks&&r.landmarks[0])||null});
   if(i%5==0)$('st').textContent="Analyzing… "+Math.round(i/n*100)+"%"}
@@ -70,10 +74,15 @@ function evaluate(){
  const F=S.map((s,i)=>({...s,i})).filter(s=>s.p),W=v.videoWidth,H=v.videoHeight;
  if(F.length<10)return $('st').textContent="No person detected reliably. Try a clearer full-body clip.";
  const P=(f,k)=>({x:f.p[k].x*W,y:f.p[k].y*H});
- const wr=F.map(f=>{const a=P(f,15),b=P(f,16);return{x:(a.x+b.x)/2,y:(a.y+b.y)/2}});
+ const wr0=F.map(f=>{const a=P(f,15),b=P(f,16);return{x:(a.x+b.x)/2,y:(a.y+b.y)/2}});
+ const med=(a,i,k)=>[a[Math.max(0,i-1)][k],a[i][k],a[Math.min(a.length-1,i+1)][k]].sort((x,y)=>x-y)[1];
+ const wr=wr0.map((_,i)=>({x:med(wr0,i,'x'),y:med(wr0,i,'y')}));
  const sp=wr.map((w,i)=>i?Math.hypot(w.x-wr[i-1].x,w.y-wr[i-1].y)/(F[i].t-F[i-1].t):0);
  const sm=sp.map((_,i)=>(sp[Math.max(0,i-1)]+sp[i]+sp[Math.min(sp.length-1,i+1)])/3);
- const imp=sm.indexOf(Math.max(...sm)),mx=sm[imp];let st=imp;
+ const WN=Math.min(30,sm.length-1);let best=-1,bi=0;
+ for(let i=0;i+WN<=sm.length;i++){let s=0;for(let j=i;j<i+WN;j++)s+=sm[j];if(s>best){best=s;bi=i}}
+ let imp=bi;for(let j=bi;j<bi+WN&&j<sm.length;j++)if(sm[j]>sm[imp])imp=j;
+ const mx=sm[imp];let st=imp;
  while(st>0&&sm[st]>.1*mx)st--;
  let top=st;for(let i=st;i<=imp;i++)if(wr[i].y<wr[top].y)top=i;
  let fin=imp;while(fin<F.length-1&&F[fin].t<F[imp].t+.4)fin++;
@@ -109,7 +118,7 @@ function evaluate(){
 }
 const LN=[[11,12],[11,13],[13,15],[12,14],[14,16],[11,23],[12,24],[23,24],[23,25],[25,27],[24,26],[26,28]];
 (function loop(){ctx.clearRect(0,0,c.width,c.height);
- const s=S.length?S[Math.min(S.length-1,Math.max(0,Math.round(v.currentTime/STEP)))]:null;
+ const s=S.length?S[Math.min(S.length-1,Math.max(0,Math.round((v.currentTime-OFF)/STEP)))]:null;
  if(s&&s.p){ctx.lineWidth=Math.max(2,c.width/200);ctx.strokeStyle="#ffd23f";ctx.fillStyle="#ff5d5d";
   LN.forEach(([a,b])=>{ctx.beginPath();ctx.moveTo(s.p[a].x*c.width,s.p[a].y*c.height);ctx.lineTo(s.p[b].x*c.width,s.p[b].y*c.height);ctx.stroke()});
   [0,11,12,13,14,15,16,23,24,25,26,27,28].forEach(k=>{ctx.beginPath();ctx.arc(s.p[k].x*c.width,s.p[k].y*c.height,c.width/130+2,0,7);ctx.fill()})}
